@@ -194,6 +194,7 @@ export default function TabLayout() {
         screenOptions={{
           tabBarActiveTintColor: 'green',
           tabBarInactiveTintColor: 'gray',
+          tabBarStyle: { paddingBottom: 5, paddingTop: 5, height: 60, borderTopLeftRadius: 15, borderTopRightRadius: 15 },
         }}
       >
         <Tabs.Screen

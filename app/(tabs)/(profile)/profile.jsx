@@ -49,6 +49,15 @@ const [showDeleteModal, setShowDeleteModal] = useState(false);
 const [isDeleting, setIsDeleting] = useState(false);
 const [showDeleteSuccessModal, setShowDeleteSuccessModal] = useState(false);
 
+// Reauth state for sensitive operations (delete account)
+const [showReauthModal, setShowReauthModal] = useState(false);
+const [reauthPassword, setReauthPassword] = useState("");
+const [isReauthenticating, setIsReauthenticating] = useState(false);
+const [reauthError, setReauthError] = useState("");
+
+// Parse suspended-until from userDoc (human-readable string stored in Firestore)
+const suspendedUntilMs = userDoc?.sosSuspendedUntil ? Date.parse(userDoc.sosSuspendedUntil) : null;
+
 
 
   const [fontsLoaded] = useFonts({
@@ -101,6 +110,24 @@ const handleDeleteAccount = async () => {
   const auth = getAuth();
   const currentUser = auth.currentUser;
 
+  // If the user's SOS is currently suspended, do not attempt deletion directly.
+  // Instead prompt the user to re-authenticate first in a friendly modal so we
+  // avoid triggering `auth/requires-recent-login`.
+  if (suspendedUntilMs && Date.now() < suspendedUntilMs) {
+    const providerIsPassword = currentUser?.providerData?.some(p => p.providerId === 'password');
+    if (providerIsPassword) {
+      // Show reauth modal and a helpful message
+      setReauthError('Your SOS access is suspended. Please re-enter your password to confirm account deletion.');
+      setShowReauthModal(true);
+    } else {
+      Alert.alert(
+        'Recent login required',
+        'Your SOS access is suspended. To delete your account please sign in again using your original provider and try deleting your account.'
+      );
+    }
+    return;
+  }
+
   try {
     setIsDeleting(true);
 
@@ -121,10 +148,72 @@ const handleDeleteAccount = async () => {
       router.replace("/");
     }, 2500);
   } catch (error) {
-    console.error("Error deleting account:", error);
-    Alert.alert("Error", "Failed to delete account. Try again later.");
+    // Log as a warning so dev overlay is less intrusive; handle requires-recent-login
+    console.warn("Error deleting account:", error);
+    if (error?.code === 'auth/requires-recent-login' || (error?.message || '').includes('requires-recent-login')) {
+      const providerIsPassword = currentUser?.providerData?.some(p => p.providerId === 'password');
+      if (providerIsPassword) {
+        setReauthError('Please re-enter your password to confirm account deletion.');
+        setShowReauthModal(true);
+      } else {
+        Alert.alert(
+          'Recent login required',
+          'To delete your account you must re-authenticate. Please sign in again using your original provider (e.g. Google) and try deleting your account.'
+        );
+      }
+    } else {
+      Alert.alert("Error", "Failed to delete account. Try again later.");
+    }
   } finally {
     setIsDeleting(false);
+  }
+};
+
+// Reauthenticate with email/password and attempt deletion again
+const performReauthAndDelete = async () => {
+  setReauthError('');
+  const auth = getAuth();
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    setReauthError('No authenticated user found.');
+    return;
+  }
+
+  try {
+    setIsReauthenticating(true);
+    const credential = EmailAuthProvider.credential(currentUser.email, reauthPassword);
+    await reauthenticateWithCredential(currentUser, credential);
+
+    // After successful reauth, delete the Firestore doc and auth user
+    try {
+      const userRef = doc(db, 'users', currentUser.uid);
+      await deleteDoc(userRef);
+    } catch (e) {
+      console.warn('Failed to delete Firestore user doc during reauth-delete:', e);
+      // continue to attempt auth deletion regardless
+    }
+
+    try {
+      await deleteUser(currentUser);
+    } catch (e) {
+      console.error('Failed to delete auth user after reauth:', e);
+      setReauthError('Failed to delete account after re-authentication. Please try again later.');
+      return;
+    }
+
+    // Success
+    setShowReauthModal(false);
+    setShowDeleteModal(false);
+    setShowDeleteSuccessModal(true);
+    setTimeout(() => {
+      logout();
+      router.replace('/');
+    }, 2000);
+  } catch (err) {
+    console.error('Re-authentication failed:', err);
+    setReauthError(err?.message || 'Re-authentication failed.');
+  } finally {
+    setIsReauthenticating(false);
   }
 };
 
@@ -753,6 +842,55 @@ const handleDeleteAccount = async () => {
           >
             Cancel
           </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  </View>
+</Modal>
+
+{/* Re-authentication modal shown when recent login is required for deletion */}
+<Modal
+  animationType="fade"
+  transparent={true}
+  visible={showReauthModal}
+  onRequestClose={() => setShowReauthModal(false)}
+>
+  <View className="flex-1 justify-center items-center bg-black/50">
+    <View className="bg-white w-11/12 max-w-sm rounded-2xl p-6 items-center shadow-lg">
+      <TouchableOpacity
+        className="absolute top-4 right-4"
+        onPress={() => setShowReauthModal(false)}
+      >
+        <X size={24} color="black" />
+      </TouchableOpacity>
+
+      <Text className="text-2xl font-extrabold text-center mb-3">Re-authenticate</Text>
+      <Text className="text-center text-sm text-gray-600 mb-4">For security, please enter your password to confirm account deletion.</Text>
+
+      <TextInput
+        value={reauthPassword}
+        onChangeText={setReauthPassword}
+        placeholder="Password"
+        secureTextEntry
+        className="w-full border border-gray-200 py-2.5 px-3 rounded-lg bg-white text-slate-900 mb-2"
+      />
+      {reauthError ? <Text className="text-red-600 mb-2">{reauthError}</Text> : null}
+
+      <View className="flex-row w-full justify-between mt-3">
+        <TouchableOpacity
+          onPress={() => setShowReauthModal(false)}
+          className="flex-1 py-3 rounded-xl mr-2 items-center bg-gray-200"
+        >
+          <Text className="text-gray-900 font-bold">Cancel</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={performReauthAndDelete}
+          disabled={isReauthenticating}
+          className="flex-1 py-3 rounded-xl ml-2 items-center"
+          style={{ backgroundColor: '#ef4444' }}
+        >
+          <Text className="text-white font-bold">{isReauthenticating ? 'Processing...' : 'Confirm Delete'}</Text>
         </TouchableOpacity>
       </View>
     </View>

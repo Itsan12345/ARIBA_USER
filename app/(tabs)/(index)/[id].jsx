@@ -92,6 +92,7 @@ const ForumDetails = () => {
   const [forum, setForum] = useState(null)
   const [allComments, setAllComments] = useState([])
   const [commentMap, setCommentMap] = useState({})
+  const [authors, setAuthors] = useState({})
   const [newComment, setNewComment] = useState("")
   const [replyText, setReplyText] = useState({})
   const [replyVisible, setReplyVisible] = useState({})
@@ -206,6 +207,9 @@ const [commentFilter, setCommentFilter] = useState("Newest") // "Newest" | "Olde
           if (userDoc.exists()) {
             const userData = userDoc.data()
             forumData.authorName = `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || "Unknown User"
+            // include author photo and admin flag when available
+            forumData.authorPhoto = userData.photoURL || userData.photo || userData.avatar || forumData.authorPhoto || null
+            forumData.authorIsAdmin = !!(userData.isAdmin || userData.role === "admin" || userData.role === "Admin")
           }
         }
         setForum(forumData)
@@ -218,7 +222,16 @@ const [commentFilter, setCommentFilter] = useState("Newest") // "Newest" | "Olde
   useEffect(() => {
     const q = query(collection(db, "forums", id, "comments"), orderBy("timestamp", "asc"))
     const unsub = onSnapshot(q, (snapshot) => {
-      const comments = snapshot.docs.map((d) => ({ ...d.data(), id: d.id, parentId: null }))
+      const comments = snapshot.docs.map((d) => {
+        const data = d.data() || {}
+        return {
+          ...data,
+          id: d.id,
+          parentId: null,
+          // normalize field: prefer content, fall back to text
+          content: data.content ?? data.text ?? "",
+        }
+      })
       setAllComments(comments)
     })
     return () => unsub()
@@ -232,7 +245,15 @@ const [commentFilter, setCommentFilter] = useState("Newest") // "Newest" | "Olde
     const attachRepliesListener = (parentId) => {
       const q = query(collection(db, "forums", id, "comments", parentId, "replies"), orderBy("timestamp", "asc"))
       const unsub = onSnapshot(q, (snapshot) => {
-        const replies = snapshot.docs.map((d) => ({ ...d.data(), id: d.id, parentId }))
+        const replies = snapshot.docs.map((d) => {
+          const data = d.data() || {}
+          return {
+            ...data,
+            id: d.id,
+            parentId,
+            content: data.content ?? data.text ?? "",
+          }
+        })
         map[parentId] = replies
         setCommentMap({ ...map })
 
@@ -246,6 +267,45 @@ const [commentFilter, setCommentFilter] = useState("Newest") // "Newest" | "Olde
     allComments.forEach((c) => attachRepliesListener(c.id))
     return () => unsubscribers.forEach((u) => u())
   }, [allComments, id])
+
+  // --- Fetch author profiles for comments/replies (to detect admin and photo) ---
+  useEffect(() => {
+    const fetchAuthors = async () => {
+      try {
+        const ids = new Set();
+        allComments.forEach(c => { if (c.authorId) ids.add(c.authorId) })
+        Object.values(commentMap).forEach(arr => arr.forEach(r => { if (r.authorId) ids.add(r.authorId) }))
+
+        const idsToFetch = Array.from(ids).filter(id => id && !authors[id])
+        if (idsToFetch.length === 0) return
+
+        const fetched = {}
+        await Promise.all(idsToFetch.map(async (uid) => {
+          try {
+            const snap = await getDoc(doc(db, "users", uid))
+            if (snap.exists()) {
+              const d = snap.data()
+              fetched[uid] = {
+                firstName: d.firstName || d.first_name || null,
+                lastName: d.lastName || d.last_name || null,
+                displayName: d.displayName || `${d.firstName || ''} ${d.lastName || ''}`.trim() || null,
+                photo: d.photoURL || d.photo || d.avatar || null,
+                isAdmin: !!(d.isAdmin || d.role === 'admin' || d.role === 'Admin')
+              }
+            }
+          } catch (e) {
+            console.error('Error fetching author profile', uid, e)
+          }
+        }))
+
+        if (Object.keys(fetched).length) setAuthors(prev => ({ ...prev, ...fetched }))
+      } catch (e) {
+        console.error('Error in fetchAuthors', e)
+      }
+    }
+
+    fetchAuthors()
+  }, [allComments, commentMap])
 
   // --- Likes Tracking ---
   useEffect(() => {
@@ -413,13 +473,19 @@ const [commentFilter, setCommentFilter] = useState("Newest") // "Newest" | "Olde
         {/* Comment / Reply Card */}
         <Card className="p-3 mb-3 bg-white rounded-xl flex-1">
           {/* Header: Avatar, Name, Timestamp */}
-          <Box className="flex-row justify-between items-start mb-1">
+              <Box className="flex-row justify-between items-start mb-1">
             <Box className="flex-row items-center">
               <Image
-                source={{ uri: item.authorPhoto || "https://www.shutterstock.com/image-vector/blank-avatar-photo-place-holder-600nw-1095249842.jpg" }}
+                source={{ uri: item.authorPhoto || authors[item.authorId]?.photo || "https://www.shutterstock.com/image-vector/blank-avatar-photo-place-holder-600nw-1095249842.jpg" }}
                 style={{ width: 30, height: 30, borderRadius: 15, marginRight: 6 }}
               />
               <Text bold>{item.authorName}</Text>
+              {/* show Admin pill for comments/replies authored by admin */}
+              { (authors[item.authorId]?.isAdmin || item.isAdmin) && (
+                <View style={{ marginLeft: 8, backgroundColor: '#DCFCE7', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 }}>
+                  <Text style={{ color: '#166534', fontSize: 11, fontFamily: 'DMSans-Regular' }}>Admin</Text>
+                </View>
+              )}
               <Text className="mx-2 text-gray-400">•</Text>
               <Text className="text-gray-400 text-xs font-[DM]">
                 {item.timestamp?.toDate ? timeAgo(item.timestamp.toDate(), now) : "..."}
@@ -650,13 +716,31 @@ if (commentFilter === "Newest") {
                 </Box>
               </Box>
 
-              <Box className="flex-row items-center mb-2 text-black font-[DMBold]">
-                <Image source={{ uri: forum.authorPhoto || "https://www.shutterstock.com/image-vector/blank-avatar-photo-place-holder-600nw-1095249842.jpg" }} style={{ width: 35, height: 35, borderRadius: 18, marginRight: 8 }} />
-                <Text bold>{forum.authorName}</Text>
-                <Text className="mx-2 text-gray-400">•</Text>
-                <Text className="text-gray-500 font-[DM] text-xs">
-                  {forum.timestamp?.toDate ? timeAgo(forum.timestamp.toDate(), now) : "..."}
-                </Text>
+              <Box className="flex-row items-start mb-2 text-black">
+                <Image
+                  source={{ uri: forum.authorPhoto || "https://www.shutterstock.com/image-vector/blank-avatar-photo-place-holder-600nw-1095249842.jpg" }}
+                  style={{ width: 44, height: 44, borderRadius: 22, marginRight: 12 }}
+                />
+
+                <View style={{ flex: 1 }}>
+                  <Text className="text-lg font-[DMBold] text-black">{forum.authorName}</Text>
+
+                  {/* If admin: show Admin pill with timestamp to the right. If not admin: show timestamp left-aligned below the name. */}
+                  { (forum.isAdmin || forum.authorIsAdmin) ? (
+                    <View className="flex-row items-center">
+                      <View style={{ backgroundColor: '#DCFCE7', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 }}>
+                        <Text style={{ color: '#166534', fontSize: 12, fontFamily: 'DMSans-Regular' }}>Admin</Text>
+                      </View>
+                      <Text className="ml-3 text-gray-500 text-xs font-[DM]">
+                        {forum.timestamp?.toDate ? timeAgo(forum.timestamp.toDate(), now) : "..."}
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={{ marginTop: 1 }}>
+                      <Text className="text-gray-500 text-xs font-[DM]">{forum.timestamp?.toDate ? timeAgo(forum.timestamp.toDate(), now) : "..."}</Text>
+                    </View>
+                  )}
+                </View>
               </Box>
 
               <Text className="text-base text-black font-[DM] mb-5">{forum.content}</Text>

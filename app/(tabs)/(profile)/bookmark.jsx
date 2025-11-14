@@ -179,17 +179,22 @@ const Bookmark = () => {
                     onPress={() => router.push(`/(tabs)/(index)/${item.id}`)}
                   >
                     <View className="flex-row justify-between items-start">
-                      <View className="flex-1">
+                      <View className="flex-1 mr-3">
                         <View className="flex-row items-center mb-2">
-                          <Text className="text-lg font-bold">{item.title}</Text>
+                          <Text
+                            className="text-lg font-bold flex-1"
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                          >
+                            {item.title}
+                          </Text>
                           <Text className="mx-2 text-gray-400">•</Text>
-                          <Text className="text-xs text-gray-500">
+                          <Text className="text-xs text-gray-500 shrink-0">
                             {formatTimeAgo(item.timestamp?.toDate())}
                           </Text>
                         </View>
                         <Text className="text-gray-700 mb-1" numberOfLines={3}>
                           {item.content}
-                          
                         </Text>
                       </View>
                       <BookmarkIcon size={24} color="#4CAF50" fill="#4CAF50" />

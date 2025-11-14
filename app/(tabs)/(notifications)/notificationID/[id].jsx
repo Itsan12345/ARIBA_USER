@@ -164,7 +164,7 @@ export default function NotificationReportDetails() {
           {/* Status */}
           <View className="items-center mb-6">
             <RNText className="text-lg font-[Roboto]">
-              THIS REPORT HAVE ALREADY BEEN
+              THIS REPORT HAS BEEN MARKED AS:
             </RNText>
             <RNText
               className="text-2xl font-[Roboto]"

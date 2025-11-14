@@ -9,10 +9,11 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Image,
   Linking,
   Modal,
-  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
@@ -46,6 +47,11 @@ const SOS = () => {
   const [suspendedUntil, setSuspendedUntil] = useState(null); // ms epoch
   const [suspendedModalVisible, setSuspendedModalVisible] = useState(false);
 
+  // Intro/instructions modal state (show on first load)
+  const [introVisible, setIntroVisible] = useState(false);
+  const [showIntroIcon, setShowIntroIcon] = useState(false);
+  const introAnim = useRef(new Animated.Value(0)).current; // 0 = modal shown, 1 = icon shown
+
   const { user, userDoc } = useAuth();
   const router = useRouter();
   const hasContact = Boolean(userDoc?.phoneNumber || userDoc?.phone);
@@ -56,6 +62,60 @@ const SOS = () => {
   const [showReassureModal, setShowReassureModal] = useState(false);
   const [reassureTitle, setReassureTitle] = useState('');
   const [reassureBody, setReassureBody] = useState('');
+
+  // Precompute dynamic classNames to avoid template literals in JSX
+  const outerDisabled = (!hasContact || (suspendedUntil && Date.now() < suspendedUntil));
+  const outerRingClass = outerDisabled ? 'w-[220px] h-[220px] rounded-full bg-slate-100 items-center justify-center opacity-50' : 'w-[220px] h-[220px] rounded-full bg-slate-100 items-center justify-center';
+
+  // Animated radiating rings
+  const ringA = useRef(new Animated.Value(0)).current;
+  const ringB = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    // Only start radiating ring animations when the SOS button is active
+    // (not suspended and has contact). When suspended, do not start or
+    // render the rings — cleanup will stop any running animations.
+    const loops = [];
+    const startLoop = (anim, delay) => {
+      const start = () => {
+        const seq = Animated.sequence([
+          Animated.timing(anim, { toValue: 1, duration: 2200, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 0, duration: 0, useNativeDriver: true }),
+        ]);
+        const l = Animated.loop(seq);
+        l.start();
+        loops.push({ anim: l });
+      };
+      const t = setTimeout(start, delay);
+      return t;
+    };
+
+    let t1 = null;
+    let t2 = null;
+    if (!outerDisabled) {
+      t1 = startLoop(ringA, 0);
+      t2 = startLoop(ringB, 700);
+    }
+
+    return () => {
+      [t1, t2].forEach(t => t && clearTimeout(t));
+      // stop animations if running
+      try { ringA.stopAnimation(); } catch (e) {}
+      try { ringB.stopAnimation(); } catch (e) {}
+    };
+   }, [ringA, ringB, outerDisabled]);
+
+
+  // Hotlines modal state and data
+  const [hotlinesVisible, setHotlinesVisible] = useState(false);
+  const hotlines = [
+    { id: 'police', name: 'Police', number: '911' },
+    { id: 'fire', name: 'Fire Department', number: '911' },
+    { id: 'ambulance', name: 'Ambulance', number: '911' },
+    { id: 'barangay', name: 'Barangay Hotline', number: '+63-123-456-789' },
+    { id: 'national', name: 'National Emergency', number: '+63-2-911-0000' },
+  ];
+
 
   useEffect(() => {
     if (confirmVisible) {
@@ -103,16 +163,45 @@ const SOS = () => {
         if (mounted && val) {
           const ms = parseInt(val, 10);
           if (!Number.isNaN(ms)) setSuspendedUntil(ms);
-        } else if (mounted && userDoc?.sosSuspendedUntilMs) {
-          // fallback to server-side value if client hasn't persisted it locally
-          const serverMs = userDoc.sosSuspendedUntilMs;
-          if (typeof serverMs === 'number' && !Number.isNaN(serverMs)) setSuspendedUntil(serverMs);
+        } else if (mounted) {
+          // fallback to server-side human-readable suspended-until string
+          if (userDoc?.sosSuspendedUntil) {
+            const parsed = Date.parse(userDoc.sosSuspendedUntil);
+            if (!Number.isNaN(parsed)) setSuspendedUntil(parsed);
+          }
         }
       } catch (e) {
         // ignore
       }
     };
     load();
+    return () => { mounted = false; };
+  }, [user]);
+
+  // Load whether we've shown the intro before (per-user) and set initial states
+  useEffect(() => {
+    let mounted = true;
+    const loadIntro = async () => {
+      try {
+        const key = user?.uid ? `sos_intro_shown_${user.uid}` : `sos_intro_shown_local`;
+        const val = await AsyncStorage.getItem(key);
+        if (!mounted) return;
+        if (!val) {
+          // first time — show modal
+          setIntroVisible(true);
+          setShowIntroIcon(false);
+          introAnim.setValue(0);
+        } else {
+          // show only subtle icon
+          setIntroVisible(false);
+          setShowIntroIcon(true);
+          introAnim.setValue(1);
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+    loadIntro();
     return () => { mounted = false; };
   }, [user]);
 
@@ -124,10 +213,11 @@ const SOS = () => {
       // Also try to clear suspension metadata in Firestore (best-effort).
       if (user?.uid) {
         try {
+          // Clear both human-readable and legacy fields (best-effort)
           await updateDoc(doc(db, 'users', user.uid), {
             sosSuspended: false,
             sosSuspendedAt: null,
-            sosSuspendedUntilMs: null,
+            sosSuspendedUntil: null,
           });
         } catch (e) {
           console.warn('Could not clear suspension in Firestore (client may lack permission)', e);
@@ -142,7 +232,8 @@ const SOS = () => {
 
   const suspendUserForWeek = async (reason) => {
     try {
-      const until = Date.now() + 7 * 24 * 60 * 60 * 1000; // 1 week in ms
+      // Suspend for 3 days (in milliseconds)
+      const until = Date.now() + 3 * 24 * 60 * 60 * 1000; // 3 days in ms
       setSuspendedUntil(until);
       setSuspendedModalVisible(true);
 
@@ -161,10 +252,14 @@ const SOS = () => {
       // continue to enforce suspension locally and log a warning.
       if (user?.uid) {
         try {
+          // Persist a human-readable suspended-until string in Firestore so
+          // admins and tooling can show the end date/time without converting
+          // milliseconds. Keep a legacy numeric field nullified for safety.
           await updateDoc(doc(db, 'users', user.uid), {
             sosSuspended: true,
             sosSuspendedAt: serverTimestamp(),
-            sosSuspendedUntilMs: until,
+            // Human-readable string, e.g. "Mon, Oct 29 2025, 2:34:00 PM"
+            sosSuspendedUntil: new Date(until).toLocaleString(),
           });
         } catch (e) {
           // do not block the UX if Firestore update fails (likely due to rules)
@@ -182,6 +277,29 @@ const SOS = () => {
     }
   };
 
+    const closeIntroAndShowIcon = async () => {
+      try {
+        // animate modal -> icon
+        Animated.timing(introAnim, { toValue: 1, duration: 500, easing: Easing.out(Easing.quad), useNativeDriver: true }).start(async () => {
+          setIntroVisible(false);
+          setShowIntroIcon(true);
+          // persist that we've shown the intro
+          const key = user?.uid ? `sos_intro_shown_${user.uid}` : `sos_intro_shown_local`;
+          try { await AsyncStorage.setItem(key, '1'); } catch (e) { /* ignore */ }
+        });
+      } catch (e) {
+        setIntroVisible(false);
+        setShowIntroIcon(true);
+      }
+    };
+
+    const openIntroFromIcon = () => {
+      // show modal again and animate back
+      setIntroVisible(true);
+      setShowIntroIcon(false);
+      introAnim.setValue(0);
+    };
+
   const incrementCancelCount = async (reason) => {
     try {
       const key = user?.uid ? `sos_cancel_count_${user.uid}` : `sos_cancel_count_local`;
@@ -189,7 +307,7 @@ const SOS = () => {
       setCancelCount(next);
       await AsyncStorage.setItem(key, String(next));
 
-      // If next is 3 or 4 (approaching suspension), show a clear warning that further cancels will suspend for 1 week
+      // If next is 3 or 4 (approaching suspension), show a clear warning that further cancels will suspend for 3 days
       if (next >= 3 && next < CANCEL_THRESHOLD) {
         setWarningShowCount(next);
         setWarningModalVisible(true);
@@ -279,13 +397,13 @@ const SOS = () => {
     }
   };
 
-  const handlePress = () => {
+      const handlePress = () => {
     // Require contact number
     // Check suspension
     try {
       if (suspendedUntil && Date.now() < suspendedUntil) {
-        const until = new Date(suspendedUntil).toLocaleString();
-        Alert.alert('SOS access restricted', `Your SOS access is suspended until ${until}.`);
+        // Show suspended modal instead of an alert for a polished UX
+        setSuspendedModalVisible(true);
         return;
       }
       // if suspension expired, clear it
@@ -529,41 +647,134 @@ const SOS = () => {
   }, []);
 
   return (
-    <View style={styles.container}>
-      <TouchableOpacity
+    <View className="flex-1 justify-center items-center bg-emerald-50">
+      <View className="relative items-center justify-center">
+        {/* Radiating rings (Animated) — render only when active (not suspended) */}
+        {!outerDisabled && (
+          <>
+            <Animated.View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                width: 160,
+                height: 160,
+                borderRadius: 110,
+                borderWidth: 2,
+                borderColor: '#ef4444',
+                opacity: ringA.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0] }),
+                transform: [{ scale: ringA.interpolate({ inputRange: [0, 1], outputRange: [1, 2.2] }) }],
+              }}
+            />
+            <Animated.View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                width: 160,
+                height: 160,
+                borderRadius: 110,
+                borderWidth: 2,
+                borderColor: '#ef4444',
+                opacity: ringB.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0] }),
+                transform: [{ scale: ringB.interpolate({ inputRange: [0, 1], outputRange: [1, 2.2] }) }],
+              }}
+            />
+          </>
+        )}
+
+        <TouchableOpacity
         accessible
         accessibilityLabel="Send SOS"
         accessibilityHint="Sends an alert to emergency contacts"
         activeOpacity={0.8}
         onPress={handlePress}
-        style={[
-          styles.outerRing,
-          (!hasContact || (suspendedUntil && Date.now() < suspendedUntil)) ? styles.outerRingDisabled : null,
-        ]}
-      >
-        <View style={styles.innerCircle}>
-          <Text style={styles.sosText}>SOS</Text>
-        </View>
-      </TouchableOpacity>
+        className={outerRingClass}
+        >
+          <View className="w-[160px] h-[160px] rounded-full bg-red-500 items-center justify-center shadow-lg">
+            <Text className="text-white text-[38px] font-[Roboto]">SOS</Text>
+          </View>
+        </TouchableOpacity>
+      </View>
 
       {/* Show in-app suspension banner when suspended */}
       {suspendedUntil && Date.now() < suspendedUntil && (
-        <View style={{ marginTop: 16, paddingHorizontal: 20 }}>
-          <Text style={{ color: '#b91c1c', textAlign: 'center', fontWeight: '700' }}>
+        <View className="mt-4 px-5">
+          <Text className="text-red-700 text-center font-extrabold">
             Your account’s SOS access is temporarily suspended until {new Date(suspendedUntil).toLocaleString()}.
           </Text>
         </View>
       )}
 
+      {/* Intro / Instructions modal (shown on first load) */}
+      <Modal transparent visible={introVisible} animationType="fade">
+        <View className="flex-1 bg-black/50 justify-center items-center">
+          <Animated.View
+            style={{
+              width: 320,
+              padding: 18,
+              backgroundColor: '#ffffff',
+              borderRadius: 12,
+              alignItems: 'center',
+              transform: [{ scale: introAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.85] }) }],
+              opacity: introAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+            }}
+          >
+            <Image source={require('@/assets/images/question-icon.png')} className="w-[72px] h-[72px] mb-2" resizeMode="contain" />
+            <Text className="text-[18px] font-[Poppins] mb-2 text-center">How to use SOS</Text>
+            <Text className="text-[14px] text-gray-700 text-center mb-3">Tap the red <Text className="font-extrabold">SOS</Text> button to alert responders. You will be asked to confirm before the alert is sent.</Text>
+            <View className="w-full mt-1">
+              <Text className="text-[13px] text-gray-600 mb-2">• Press once to start a 3s countdown.</Text>
+              <Text className="text-[13px] text-gray-600 mb-2">• Confirm by typing <Text className="font-extrabold">YES</Text> or the alert will be marked unverified.</Text>
+              <Text className="text-[13px] text-gray-600">• Repeated cancellations may temporarily suspend SOS access.</Text>
+            </View>
+
+            <TouchableOpacity
+              onPress={closeIntroAndShowIcon}
+              className="mt-4 w-full bg-green-600 py-3 rounded-lg items-center"
+            >
+              <Text className="text-white font-extrabold">Got it</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        </View>
+      </Modal>
+
+      {/* Subtle intro icon (appears after intro is dismissed) */}
+      {(showIntroIcon || introVisible) && (
+        <Animated.View
+          pointerEvents={showIntroIcon ? 'auto' : 'none'}
+          style={{
+            position: 'absolute',
+            left: 16,
+            bottom: 20,
+            width: 34,
+            height: 34,
+            borderRadius: 22,
+            backgroundColor: '#F0FDF4',
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.15,
+            shadowRadius: 6,
+            elevation: 6,
+            opacity: introAnim,
+            transform: [{ scale: introAnim }],
+          }}
+        >
+          <TouchableOpacity onPress={openIntroFromIcon} className="w-full h-full items-center justify-center" accessibilityLabel="SOS instructions">
+            <Image source={require('@/assets/images/information-icon.png')} style={{ width: 34, height: 34 }} resizeMode="contain" />
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
       {/* Confirmation modal with 3s countdown */}
       <Modal transparent visible={confirmVisible} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.confirmBox}>
-            <Text style={styles.confirmTitle}>Are you sure?</Text>
-            <Text style={styles.confirmText}>Sending emergency alert in {countdown} second{countdown !== 1 ? 's' : ''}.</Text>
-            <View style={styles.confirmButtons}>
-              <TouchableOpacity style={styles.cancelButton} onPress={handleCancelConfirm}>
-                <Text style={styles.cancelText}>Cancel</Text>
+        <View className="flex-1 bg-black/40 justify-center items-center">
+          <View className="w-[300px] p-5 bg-white rounded-lg items-center">
+            <Text className="text-[18px] font-extrabold mb-2">Are you sure?</Text>
+            <Text className="text-[14px] text-gray-800 text-center">Sending emergency alert in {countdown} second{countdown !== 1 ? 's' : ''}.</Text>
+            <View className="flex-row mt-4">
+              <TouchableOpacity className="py-2.5 px-4 rounded-lg bg-gray-200" onPress={handleCancelConfirm}>
+                <Text className="text-gray-900 font-semibold">Cancel</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -572,29 +783,29 @@ const SOS = () => {
 
       {/* Reassurance modal shown after sending SOS (dismiss with top-right X) */}
       <Modal transparent visible={showReassureModal} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.reassureBox}>
+        <View className="flex-1 bg-black/40 justify-center items-center">
+          <View className="w-[340px] py-5 px-4 bg-white rounded-lg items-center shadow-xl">
             {/* Top-right close X */}
             <TouchableOpacity
-              style={styles.closeButton}
+              className="absolute top-2 right-2 p-2 z-10"
               onPress={() => setShowReassureModal(false)}
               accessibilityLabel="Close reassurance dialog"
             >
-              <Text style={styles.closeButtonText}>✕</Text>
+              <Text className="text-[18px] text-gray-700 font-extrabold">✕</Text>
             </TouchableOpacity>
 
-            <Text style={styles.reassureTitle}>{reassureTitle}</Text>
-            <View style={styles.divider} />
-            <Image source={require('@/assets/images/green-confirm.png')} style={styles.reassureIcon} resizeMode="contain" />
-            <Text style={styles.reassureBody}>{reassureBody}</Text>
+            <Text className="text-[20px] font-extrabold mb-2 text-center">{reassureTitle}</Text>
+            <View className="h-[2px] bg-gray-200 w-11/12 my-3" />
+            <Image source={require('@/assets/images/green-confirm.png')} className="w-[96px] h-[96px] my-2" resizeMode="contain" />
+            <Text className="text-[14px] text-gray-700 text-center leading-5 mt-1">{reassureBody}</Text>
             {/* Location fallback: only show Open in Maps button */}
-            <View style={{ marginTop: 16, width: '100%' }}>
+            <View className="mt-4 w-full">
               {lastSosUnverified ? (
-                <View style={styles.noFilesContainer}>
-                  <Text style={{ color: '#6b7280', textAlign: 'center' }}>Location not shown for unverified alerts.</Text>
+                <View>
+                  <Text className="text-gray-500 text-center">Location not shown for unverified alerts.</Text>
                 </View>
               ) : (lastSentLocation && lastSentLocation.length === 2 ? (
-                <View style={{ alignItems: 'center' }}>
+                <View className="items-center">
                   <TouchableOpacity
                     onPress={() => {
                       const lat = lastSentLocation[0];
@@ -602,14 +813,14 @@ const SOS = () => {
                       const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
                       Linking.openURL(url);
                     }}
-                    style={{ width: '80%', backgroundColor: '#16a34a', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8 }}
+                    className="w-4/5 bg-green-600 py-2.5 px-4 rounded-lg"
                   >
-                    <Text style={{ color: '#fff', fontWeight: '700', textAlign: 'center', fontSize: 16 }}>Click to view location</Text>
+                    <Text className="text-white font-extrabold text-[16px] text-center">Click to view location</Text>
                   </TouchableOpacity>
                 </View>
               ) : (
-                <View style={styles.noFilesContainer}>
-                  <Text style={{ color: '#6b7280' }}>Location not available.</Text>
+                <View>
+                  <Text className="text-gray-500">Location not available.</Text>
                 </View>
               ))}
             </View>
@@ -619,34 +830,34 @@ const SOS = () => {
 
       {/* Custom Confirm SOS modal (design from provided image) */}
       <Modal transparent visible={showConfirmModal} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.confirmModalBox}>
-            <Text style={styles.confirmModalTitle}>CONFIRM SOS</Text>
-            <View style={styles.divider} />
+        <View className="flex-1 bg-black/40 justify-center items-center">
+          <View className="w-[340px] py-5 px-4 bg-white rounded-lg items-center shadow-xl">
+            <Text className="text-[20px] font-extrabold text-center">CONFIRM SOS</Text>
+            <View className="h-[2px] bg-gray-200 w-11/12 my-3" />
 
             <Image
               source={require('@/assets/images/confirm-sos.png')}
-              style={styles.confirmIcon}
+              className="w-[110px] h-[110px] my-2"
               resizeMode="contain"
             />
 
-            <Text style={styles.messageText}>
+            <Text className="text-[15px] text-gray-700 text-center mt-1 mb-3 leading-5">
               This will alert Barangay Responders immediately. Use only for real emergencies.
             </Text>
 
-            <View style={styles.footerButtonRow}>
+            <View className="w-full flex-row justify-between mt-2">
               <TouchableOpacity
-                style={styles.leftButton}
+                className="flex-1 mr-2 bg-rose-500 py-3 rounded-lg items-center"
                 onPress={() => {
                   setShowConfirmModal(false);
                   incrementCancelCount('Cancelled on confirm modal');
                 }}
               >
-                <Text style={styles.leftButtonText}>Cancel</Text>
+                <Text className="text-white font-extrabold">Cancel</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.rightButton}
+                className="flex-1 ml-2 bg-green-600 py-3 rounded-lg items-center"
                 onPress={() => {
                   setShowConfirmModal(false);
                   // user confirmed — show the verify modal that requires typing YES
@@ -668,7 +879,7 @@ const SOS = () => {
                   }, 1000);
                 }}
               >
-                <Text style={styles.rightButtonText}>Confirm SOS</Text>
+                <Text className="text-white font-extrabold">Confirm SOS</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -677,11 +888,11 @@ const SOS = () => {
 
       {/* Verify modal: type YES to confirm within 60s */}
       <Modal transparent visible={verifyModalVisible} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.verifyBox}>
+        <View className="flex-1 bg-black/40 justify-center items-center">
+          <View className="w-[340px] py-4 px-4 bg-white rounded-lg items-center shadow-xl">
             {/* Close X */}
             <TouchableOpacity
-              style={styles.verifyClose}
+              className="absolute top-2 right-2 p-2 z-10"
               onPress={() => {
                 clearInterval(verifyRef.current);
                 setVerifyModalVisible(false);
@@ -690,19 +901,19 @@ const SOS = () => {
               }}
               accessibilityLabel="Close verification dialog"
             >
-              <Text style={styles.closeButtonText}>✕</Text>
+              <Text className="text-[18px] text-gray-700 font-extrabold">✕</Text>
             </TouchableOpacity>
 
-            <Image source={require('@/assets/images/confirm-sos.png')} style={styles.verifyIcon} resizeMode="contain" />
+            <Image source={require('@/assets/images/confirm-sos.png')} className="w-[86px] h-[86px] mb-1" resizeMode="contain" />
 
-            <Text style={styles.verifyTitle}>Confirm emergency</Text>
-            <Text style={styles.verifyText}>
-              Type <Text style={{ fontWeight: '800' }}>YES</Text> below to confirm this emergency. This will send an alert to Barangay San Nicholas.
+            <Text className="text-[18px] font-extrabold mt-1 mb-1 text-gray-900">Confirm emergency</Text>
+            <Text className="text-[14px] text-gray-700 text-center leading-5">
+              Type <Text className="font-extrabold">YES</Text> below to confirm this emergency. This will send an alert to Barangay San Nicholas.
             </Text>
 
-            <View style={styles.verifyMetaRow}>
-              <Text style={styles.verifyCountdown}>Time remaining: </Text>
-              <Text style={[styles.verifyCountdown, { fontWeight: '900', color: '#dc2626' }]}>{verifyCountdown}s</Text>
+            <View className="flex-row items-center justify-center mt-2">
+              <Text className="mt-2 text-gray-500 font-semibold">Time remaining: </Text>
+              <Text className="mt-2 font-extrabold text-red-600">{verifyCountdown}s</Text>
             </View>
 
             <TextInput
@@ -710,15 +921,15 @@ const SOS = () => {
               onChangeText={setVerifyInput}
               placeholder="YES"
               placeholderTextColor="#9ca3af"
-              style={styles.verifyInput}
+              className="mt-2 w-full border border-gray-200 py-2.5 px-3 rounded-lg bg-white text-slate-900 text-[16px] text-center"
               autoCapitalize="characters"
               accessibilityLabel="Confirm emergency input"
               returnKeyType="done"
             />
 
-            <View style={styles.verifyButtonsRow}>
+            <View className="flex-row mt-3 w-full justify-between">
               <TouchableOpacity
-                style={[styles.verifyActionButton, styles.verifyCancelButton]}
+                className="flex-1 py-3 rounded-lg items-center justify-center bg-gray-200 mr-2"
                 onPress={() => {
                   // user cancelled the verify modal -> mark unverified
                   clearInterval(verifyRef.current);
@@ -727,11 +938,11 @@ const SOS = () => {
                   sendUnverifiedSos();
                 }}
               >
-                <Text style={[styles.verifyActionText, styles.verifyCancelText]}>Cancel</Text>
+                <Text className="font-extrabold text-gray-900">Cancel</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.verifyActionButton, styles.verifySubmitButton]}
+                className="flex-1 py-3 rounded-lg items-center justify-center bg-green-600 ml-2"
                 onPress={() => {
                   if ((verifyInput || '').trim().toUpperCase() === 'YES') {
                     clearInterval(verifyRef.current);
@@ -744,7 +955,7 @@ const SOS = () => {
                   }
                 }}
               >
-                <Text style={[styles.verifyActionText, styles.verifySubmitText]}>Submit</Text>
+                <Text className="font-extrabold text-white">Submit</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -753,26 +964,26 @@ const SOS = () => {
 
       {/* Warning modal shown after repeated cancellations */}
       <Modal transparent visible={warningModalVisible} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.warningBox}>
-            <Image source={require('@/assets/images/confirm-sos.png')} style={styles.warningIcon} resizeMode="contain" />
-            <Text style={styles.warningTitle}>Warning: Potential Misuse Detected</Text>
+        <View className="flex-1 bg-black/40 justify-center items-center">
+          <View className="w-[340px] py-5 px-4 bg-white rounded-lg items-center shadow-xl">
+            <Image source={require('@/assets/images/confirm-sos.png')} className="w-[80px] h-[80px] mb-1" resizeMode="contain" />
+            <Text className="text-[18px] font-extrabold text-gray-900 mb-4 text-center">Warning: Potential Misuse Detected</Text>
 
-            <Text style={styles.warningBody}>
-              We detected <Text style={styles.warningCountText}>{warningShowCount}</Text> out of <Text style={styles.warningCountText}>{CANCEL_THRESHOLD}</Text> repeated cancellations of the SOS flow. Please only use SOS for real emergencies.
+            <Text className="text-[14px] text-gray-700 text-center leading-5 mb-3">
+              We detected <Text className="text-red-700 font-extrabold">{warningShowCount}</Text> out of <Text className="text-red-700 font-extrabold">{CANCEL_THRESHOLD}</Text> repeated cancellations of the SOS flow. Please only use SOS for real emergencies.
             </Text>
 
-            <Text style={[styles.warningBody, { marginBottom: 6, fontSize: 13 }]}>If you cancel {CANCEL_THRESHOLD} times, SOS access will be suspended for 1 week.</Text>
+            <Text className="text-[13px] text-gray-700 text-center mb-3">If you cancel {CANCEL_THRESHOLD} times, SOS access will be suspended for 3 days.</Text>
 
-            <View style={styles.warningButtonsRow}>
+            <View className="w-full justify-center mt-2">
               <TouchableOpacity
-                style={[styles.warningButton, styles.warningSingleButton]}
+                className="w-full bg-green-600 py-3 rounded-lg items-center"
                 onPress={() => {
                   setWarningModalVisible(false);
                 }}
                 accessibilityLabel="Acknowledge misuse warning"
               >
-                <Text style={styles.warningSingleText}>I Understand</Text>
+                <Text className="text-white font-extrabold text-[15px]">I Understand</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -781,20 +992,27 @@ const SOS = () => {
 
       {/* Suspended modal shown when user is suspended */}
       <Modal transparent visible={suspendedModalVisible} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.suspendedBox}>
-            <Image source={require('@/assets/images/confirm-sos.png')} style={styles.warningIcon} resizeMode="contain" />
-            <Text style={styles.suspendedTitle}>SOS Temporarily Suspended</Text>
-            <Text style={styles.suspendedBody}>
-              Your SOS access has been suspended for 1 week due to repeated cancellations. You will regain access automatically after the suspension period. If you believe this is a mistake, contact support.
+        <View className="flex-1 bg-black/40 justify-center items-center">
+          <View className="w-[340px] py-6 px-5 bg-white rounded-xl items-center shadow-2xl">
+            <Image source={require('@/assets/images/confirm-sos.png')} className="w-[80px] h-[80px] mb-1" resizeMode="contain" />
+            <Text className="text-[20px] font-extrabold text-gray-900 mt-2 mb-2 text-center">SOS Temporarily Suspended</Text>
+            <Text className="text-[14px] text-gray-700 text-center leading-5 mb-2">
+              Your SOS access has been temporarily suspended due to repeated cancellations. You will regain access automatically after the suspension period.
             </Text>
+            {suspendedUntil ? (
+              <Text className="text-[13px] text-gray-600 text-center mb-4">Suspended until {new Date(suspendedUntil).toLocaleString()}.</Text>
+            ) : userDoc?.sosSuspendedUntil ? (
+              <Text className="text-[13px] text-gray-600 text-center mb-4">Suspended until {userDoc.sosSuspendedUntil}.</Text>
+            ) : (
+              <Text className="text-[13px] text-gray-600 text-center mb-4">You will regain access automatically after the suspension period.</Text>
+            )}
 
             <TouchableOpacity
-              style={styles.suspendedButton}
+              className="w-3/5 bg-green-600 py-3 rounded-lg items-center"
               onPress={() => setSuspendedModalVisible(false)}
               accessibilityLabel="Dismiss suspension dialog"
             >
-              <Text style={styles.suspendedButtonText}>OK</Text>
+              <Text className="text-white font-extrabold text-[16px]">OK</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -802,42 +1020,40 @@ const SOS = () => {
 
       {/* Loading location */}
       <Modal transparent visible={loadingLocation} animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.confirmBox}>
+        <View className="flex-1 bg-black/40 justify-center items-center">
+          <View className="w-[300px] p-5 bg-white rounded-lg items-center">
             <ActivityIndicator size="large" color="#ef4444" />
-            <Text style={[styles.confirmText, { marginTop: 12 }]}>Fetching location...</Text>
+            <Text className="text-[14px] text-gray-800 text-center mt-3">Fetching location...</Text>
           </View>
         </View>
       </Modal>
 
       {/* Emergency type selector modal (select then confirm) */}
       <Modal transparent visible={typeModalVisible} animationType="slide">
-        <View style={styles.modalOverlay}>
-          <View style={styles.typeBox}>
-            <Text style={styles.confirmTitle}>Select Emergency Type</Text>
-            {emergencyTypes.map((t) => (
-              <TouchableOpacity
-                key={t}
-                style={[
-                  styles.typeItem,
-                  selectedType === t ? styles.typeItemSelected : null,
-                ]}
-                onPress={() => setSelectedType(t)}
-              >
-                <Text style={[styles.typeText, selectedType === t ? styles.typeTextSelected : null]}>{t}</Text>
-              </TouchableOpacity>
-            ))}
+        <View className="flex-1 bg-black/40 justify-center items-center">
+          <View className="w-[320px] p-5 bg-white rounded-lg">
+            <Text className="text-[18px] font-extrabold mb-2">Select Emergency Type</Text>
+            {emergencyTypes.map((t) => {
+              const itemSelected = selectedType === t;
+              const itemClass = itemSelected ? 'py-3 px-2 rounded-lg my-1.5 bg-green-50 border border-green-600' : 'py-3 px-2 rounded-lg my-1.5 bg-slate-50';
+              const itemTextClass = itemSelected ? 'text-green-700 font-extrabold' : 'text-[16px] text-slate-900';
+              return (
+                <TouchableOpacity key={t} className={itemClass} onPress={() => setSelectedType(t)}>
+                  <Text className={itemTextClass}>{t}</Text>
+                </TouchableOpacity>
+              );
+            })}
 
             {selectedType === 'Other' && (
-              <View style={{ marginTop: 10 }}>
-                <Text style={styles.inputLabel}>Please describe the emergency</Text>
-                <Text style={styles.inputHint}>Provide a brief, clear description so responders know what to expect.</Text>
+              <View className="mt-2.5">
+                <Text className="text-[14px] text-slate-900 font-extrabold mb-1.5">Please describe the emergency</Text>
+                <Text className="text-[12px] text-gray-500 mb-1.5">Provide a brief, clear description so responders know what to expect.</Text>
                 <TextInput
                   value={otherReason}
                   onChangeText={(text) => setOtherReason(text)}
                   placeholder="e.g. gas smell in building, child missing near market, strong chemical odor"
                   placeholderTextColor="#9ca3af"
-                  style={styles.otherInput}
+                  className="border border-gray-200 py-2.5 px-3 rounded-lg bg-white text-slate-900 w-[280px] min-h-[96px] text-[14px] shadow-sm"
                   returnKeyType="done"
                   multiline
                   numberOfLines={4}
@@ -845,28 +1061,28 @@ const SOS = () => {
                   maxLength={300}
                   accessibilityLabel="Other emergency description"
                 />
-                <View style={styles.counterRow}>
-                  <Text style={styles.counterText}>{otherReason ? otherReason.length : 0}/300</Text>
+                <View className="mt-1.5 w-[280px] items-end">
+                  <Text className="text-[12px] text-gray-500">{otherReason ? otherReason.length : 0}/300</Text>
                 </View>
               </View>
             )}
 
-            <View style={styles.footerButtons}>
+            <View className="flex-row justify-between mt-3">
               {(() => {
                 const canConfirm = Boolean(selectedType) && (selectedType !== 'Other' || (otherReason && otherReason.trim().length > 0));
                 return (
                   <TouchableOpacity
-                    style={[styles.confirmButton, !canConfirm ? styles.confirmButtonDisabled : null]}
+                    className={(canConfirm ? 'bg-red-500' : 'bg-red-300') + ' py-2.5 px-4 rounded-lg mr-2'}
                     disabled={!canConfirm}
                     onPress={() => canConfirm && handleSelectType(selectedType)}
                   >
-                    <Text style={styles.confirmButtonText}>Confirm</Text>
+                    <Text className="text-white font-extrabold">Confirm</Text>
                   </TouchableOpacity>
                 );
               })()}
 
-              <TouchableOpacity style={styles.cancelButton} onPress={() => { setTypeModalVisible(false); setSelectedType(null); }}>
-                <Text style={styles.cancelText}>Cancel</Text>
+              <TouchableOpacity className="py-2.5 px-4 rounded-lg bg-gray-200" onPress={() => { setTypeModalVisible(false); setSelectedType(null); }}>
+                <Text className="text-gray-900 font-semibold">Cancel</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -875,489 +1091,6 @@ const SOS = () => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F0FDF4',
-  },
-  outerRing: {
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: '#f1f5f9', // light gray ring
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  innerCircle: {
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    backgroundColor: '#ef4444', // red
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-  },
-  sosText: {
-    color: '#000',
-    fontSize: 28,
-    fontWeight: '700',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  confirmBox: {
-    width: 300,
-    padding: 20,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  confirmModalBox: {
-    width: 340,
-    paddingVertical: 20,
-    paddingHorizontal: 18,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    elevation: 12,
-  },
-  confirmModalTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  divider: {
-    height: 2,
-    backgroundColor: '#e6e6e6',
-    width: '90%',
-    marginVertical: 12,
-  },
-  confirmIcon: {
-    width: 110,
-    height: 110,
-    marginVertical: 8,
-  },
-  messageText: {
-    fontSize: 15,
-    color: '#374151',
-    textAlign: 'center',
-    marginTop: 6,
-    marginBottom: 14,
-    lineHeight: 18,
-  },
-  reassureBox: {
-    width: 340,
-    paddingVertical: 20,
-    paddingHorizontal: 18,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    elevation: 12,
-  },
-  reassureTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  reassureIcon: {
-    width: 96,
-    height: 96,
-    marginVertical: 10,
-  },
-  reassureBody: {
-    fontSize: 14,
-    color: '#374151',
-    textAlign: 'center',
-    lineHeight: 20,
-    marginTop: 6,
-  },
-  closeButton: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    padding: 8,
-    zIndex: 10,
-  },
-  closeButtonText: {
-    fontSize: 18,
-    color: '#374151',
-    fontWeight: '700',
-  },
-  footerButtonRow: {
-    width: '100%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 8,
-  },
-  leftButton: {
-    flex: 1,
-    marginRight: 8,
-    backgroundColor: '#ff5c63',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  rightButton: {
-    flex: 1,
-    marginLeft: 8,
-    backgroundColor: '#16a34a',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  leftButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  rightButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  confirmTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  confirmText: {
-    fontSize: 14,
-    color: '#333',
-    textAlign: 'center',
-  },
-  confirmButtons: {
-    flexDirection: 'row',
-    marginTop: 16,
-  },
-  cancelButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    backgroundColor: '#e5e7eb',
-  },
-  cancelText: {
-    color: '#111827',
-    fontWeight: '600',
-  },
-  typeBox: {
-    width: 320,
-    padding: 20,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-  },
-  typeItem: {
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    marginVertical: 6,
-    backgroundColor: '#f8fafc',
-  },
-  typeItemSelected: {
-    backgroundColor: '#e6ffed',
-    borderWidth: 1,
-    borderColor: '#16a34a',
-  },
-  typeText: {
-    fontSize: 16,
-    color: '#0f172a',
-  },
-  typeTextSelected: {
-    color: '#065f46',
-    fontWeight: '700',
-  },
-  outerRingDisabled: {
-    opacity: 0.5,
-  },
-  footerButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 12,
-  },
-  confirmButton: {
-    backgroundColor: '#ef4444',
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    borderRadius: 8,
-    marginRight: 8,
-  },
-  confirmButtonDisabled: {
-    backgroundColor: '#fca5a5',
-  },
-  confirmButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-  },
-  inputLabel: {
-    fontSize: 14,
-    color: '#0f172a',
-    fontWeight: '700',
-    marginBottom: 6,
-  },
-  otherInput: {
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    color: '#0f172a',
-    width: 280,
-    minHeight: 96,
-    fontSize: 14,
-    lineHeight: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  inputHint: {
-    fontSize: 12,
-    color: '#6b7280',
-    marginBottom: 6,
-  },
-  counterRow: {
-    marginTop: 6,
-    width: 280,
-    alignItems: 'flex-end',
-  },
-  counterText: {
-    fontSize: 12,
-    color: '#6b7280',
-  },
-  verifyBox: {
-    width: 340,
-    paddingVertical: 18,
-    paddingHorizontal: 16,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    elevation: 12,
-  },
-  verifyTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 6,
-    marginBottom: 6,
-    color: '#111827',
-  },
-  verifyText: {
-    fontSize: 14,
-    color: '#374151',
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-  verifyCountdown: {
-    marginTop: 8,
-    color: '#6b7280',
-    fontWeight: '700',
-  },
-  verifyInput: {
-    marginTop: 10,
-    width: '100%',
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#fff',
-    color: '#0f172a',
-    fontSize: 16,
-    textAlign: 'center',
-  },
-  verifyIcon: {
-    width: 86,
-    height: 86,
-    marginBottom: 6,
-  },
-  verifyClose: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    padding: 8,
-    zIndex: 10,
-  },
-  verifyMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 8,
-  },
-  verifyButtonsRow: {
-    flexDirection: 'row',
-    marginTop: 12,
-    width: '100%',
-    justifyContent: 'space-between',
-  },
-  verifyActionButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  verifyActionText: {
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  verifyCancelButton: {
-    backgroundColor: '#e5e7eb',
-    marginRight: 8,
-  },
-  verifySubmitButton: {
-    backgroundColor: '#16a34a',
-    marginLeft: 8,
-  },
-  verifyCancelText: {
-    color: '#111827',
-  },
-  verifySubmitText: {
-    color: '#fff',
-  },
-  warningBox: {
-    width: 340,
-    paddingVertical: 20,
-    paddingHorizontal: 18,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    elevation: 12,
-  },
-  warningIcon: {
-    width: 80,
-    height: 80,
-    marginBottom: 6,
-  },
-  warningTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 18,
-    textAlign: 'center',
-  },
-  warningBody: {
-    fontSize: 14,
-    color: '#374151',
-    textAlign: 'center',
-    lineHeight: 18,
-    marginBottom: 14,
-  },
-  warningButtonsRow: {
-    flexDirection: 'row',
-    width: '100%',
-    justifyContent: 'center',
-    marginTop: 6,
-  },
-  warningButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  warningSecondary: {
-    backgroundColor: '#e5e7eb',
-    marginRight: 8,
-  },
-  warningPrimary: {
-    backgroundColor: '#dc2626',
-    marginLeft: 8,
-  },
-  warningPrimaryText: {
-    color: '#fff',
-    fontWeight: '800',
-  },
-  warningSecondaryText: {
-    color: '#111827',
-    fontWeight: '700',
-  },
-  warningSingleButton: {
-    width: '62%',
-    backgroundColor: '#16a34a',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  warningSingleText: {
-    color: '#fff',
-    fontWeight: '800',
-    fontSize: 15,
-  },
- 
-  warningCountText: {
-    color: '#b91c1c',
-    fontWeight: '900',
-    fontSize: 14,
-  },
-  /* Suspended modal specific styles */
-  suspendedBox: {
-    width: 340,
-    paddingVertical: 22,
-    paddingHorizontal: 20,
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.14,
-    shadowRadius: 18,
-    elevation: 16,
-  },
-  suspendedTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0f172a',
-    marginTop: 6,
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  suspendedBody: {
-    fontSize: 14,
-    color: '#374151',
-    textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 18,
-  },
-  suspendedButton: {
-    width: '60%',
-    backgroundColor: '#16a34a',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  suspendedButtonText: {
-    color: '#fff',
-    fontWeight: '800',
-    fontSize: 16,
-  },
-});
 
 // mapStyles removed — only Open in Maps button is used now
 
