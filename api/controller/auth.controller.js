@@ -79,7 +79,7 @@ export const forgotPassword = async ( email ) => {
         await userForgotPassword(email);
         return { 
             status: HttpStatus.OK, 
-            message: "User signed out successfully" 
+            message: "Password reset email sent successfully" 
         };
     }catch(error){
         console.error(`Forgot password Error: ${error.message}`);

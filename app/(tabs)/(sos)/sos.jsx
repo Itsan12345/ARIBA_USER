@@ -32,10 +32,6 @@ const SOS = () => {
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [countdown, setCountdown] = useState(3);
   const countdownRef = useRef(null);
-  const [verifyModalVisible, setVerifyModalVisible] = useState(false);
-  const [verifyInput, setVerifyInput] = useState('');
-  const [verifyCountdown, setVerifyCountdown] = useState(60);
-  const verifyRef = useRef(null);
 
   const [location, setLocation] = useState(null);
   const [loadingLocation, setLoadingLocation] = useState(false);
@@ -723,7 +719,7 @@ const SOS = () => {
             <Text className="text-[14px] text-gray-700 text-center mb-3">Tap the red <Text className="font-extrabold">SOS</Text> button to alert responders. You will be asked to confirm before the alert is sent.</Text>
             <View className="w-full mt-1">
               <Text className="text-[13px] text-gray-600 mb-2">• Press once to start a 3s countdown.</Text>
-              <Text className="text-[13px] text-gray-600 mb-2">• Confirm by typing <Text className="font-extrabold">YES</Text> or the alert will be marked unverified.</Text>
+              <Text className="text-[13px] text-gray-600 mb-2">• Confirm your emergency to send the alert to Barangay San Nicholas.</Text>
               <Text className="text-[13px] text-gray-600">• Repeated cancellations may temporarily suspend SOS access.</Text>
             </View>
 
@@ -761,7 +757,7 @@ const SOS = () => {
           }}
         >
           <TouchableOpacity onPress={openIntroFromIcon} className="w-full h-full items-center justify-center" accessibilityLabel="SOS instructions">
-            <Image source={require('@/assets/images/information-icon.png')} style={{ width: 34, height: 34 }} resizeMode="contain" />
+            <Image source={require('@/assets/images/information-icon.png')} style={{ width: 34, height: 34    }} resizeMode="contain" />
           </TouchableOpacity>
         </Animated.View>
       )}
@@ -860,102 +856,11 @@ const SOS = () => {
                 className="flex-1 ml-2 bg-green-600 py-3 rounded-lg items-center"
                 onPress={() => {
                   setShowConfirmModal(false);
-                  // user confirmed — show the verify modal that requires typing YES
-                  setVerifyInput('');
-                  setVerifyCountdown(60);
-                  setVerifyModalVisible(true);
-                  // start 60s countdown
-                  verifyRef.current = setInterval(() => {
-                    setVerifyCountdown((prev) => {
-                      if (prev <= 1) {
-                        clearInterval(verifyRef.current);
-                        // timed out — mark as unverified
-                        setVerifyModalVisible(false);
-                        sendUnverifiedSos();
-                        return 0;
-                      }
-                      return prev - 1;
-                    });
-                  }, 1000);
+                  // User confirmed — directly proceed to location and type selection
+                  triggerLocationAndType();
                 }}
               >
                 <Text className="text-white font-extrabold">Confirm SOS</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Verify modal: type YES to confirm within 60s */}
-      <Modal transparent visible={verifyModalVisible} animationType="fade">
-        <View className="flex-1 bg-black/40 justify-center items-center">
-          <View className="w-[340px] py-4 px-4 bg-white rounded-lg items-center shadow-xl">
-            {/* Close X */}
-            <TouchableOpacity
-              className="absolute top-2 right-2 p-2 z-10"
-              onPress={() => {
-                clearInterval(verifyRef.current);
-                setVerifyModalVisible(false);
-                incrementCancelCount('Cancelled on verify close');
-                sendUnverifiedSos();
-              }}
-              accessibilityLabel="Close verification dialog"
-            >
-              <Text className="text-[18px] text-gray-700 font-extrabold">✕</Text>
-            </TouchableOpacity>
-
-            <Image source={require('@/assets/images/confirm-sos.png')} className="w-[86px] h-[86px] mb-1" resizeMode="contain" />
-
-            <Text className="text-[18px] font-extrabold mt-1 mb-1 text-gray-900">Confirm emergency</Text>
-            <Text className="text-[14px] text-gray-700 text-center leading-5">
-              Type <Text className="font-extrabold">YES</Text> below to confirm this emergency. This will send an alert to Barangay San Nicholas.
-            </Text>
-
-            <View className="flex-row items-center justify-center mt-2">
-              <Text className="mt-2 text-gray-500 font-semibold">Time remaining: </Text>
-              <Text className="mt-2 font-extrabold text-red-600">{verifyCountdown}s</Text>
-            </View>
-
-            <TextInput
-              value={verifyInput}
-              onChangeText={setVerifyInput}
-              placeholder="YES"
-              placeholderTextColor="#9ca3af"
-              className="mt-2 w-full border border-gray-200 py-2.5 px-3 rounded-lg bg-white text-slate-900 text-[16px] text-center"
-              autoCapitalize="characters"
-              accessibilityLabel="Confirm emergency input"
-              returnKeyType="done"
-            />
-
-            <View className="flex-row mt-3 w-full justify-between">
-              <TouchableOpacity
-                className="flex-1 py-3 rounded-lg items-center justify-center bg-gray-200 mr-2"
-                onPress={() => {
-                  // user cancelled the verify modal -> mark unverified
-                  clearInterval(verifyRef.current);
-                  setVerifyModalVisible(false);
-                  incrementCancelCount('Cancelled on verify cancel');
-                  sendUnverifiedSos();
-                }}
-              >
-                <Text className="font-extrabold text-gray-900">Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                className="flex-1 py-3 rounded-lg items-center justify-center bg-green-600 ml-2"
-                onPress={() => {
-                  if ((verifyInput || '').trim().toUpperCase() === 'YES') {
-                    clearInterval(verifyRef.current);
-                    setVerifyModalVisible(false);
-                    setVerifyInput('');
-                    // proceed to fetch location and choose type
-                    triggerLocationAndType();
-                  } else {
-                    Alert.alert('Confirmation required', 'Type YES exactly to confirm this emergency.');
-                  }
-                }}
-              >
-                <Text className="font-extrabold text-white">Submit</Text>
               </TouchableOpacity>
             </View>
           </View>

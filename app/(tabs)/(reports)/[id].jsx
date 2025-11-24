@@ -391,30 +391,61 @@ export default function ReportDetails() {
                         <RNText className="text-xl mb-3 font-[DMBold]">Location:</RNText>
                         {report?.location && report.location.length === 2 ? (
                           <View style={mapStyles.cardContainer}>
-                            {/* If you want an interactive native map, install `react-native-maps` and re-enable MapView here. */}
-                            {/* Static map image (Google Static Maps) if API key provided, otherwise show an 'Open in Maps' button */}
-                            {global.GOOGLE_MAPS_API_KEY ? (
-                              <Image
-                                source={{ uri: `https://maps.googleapis.com/maps/api/staticmap?center=${report.location[1]},${report.location[0]}&zoom=15&size=600x300&markers=color:red%7C${report.location[1]},${report.location[0]}&key=${global.GOOGLE_MAPS_API_KEY}` }}
-                                style={{ width: '100%', height: '100%' }}
-                                resizeMode="cover"
-                              />
-                            ) : (
-                              <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 12 }}>
-                                <RNText className="text-gray-600 text-sm mb-3">Click the button below to see your location.</RNText>
-                                <TouchableOpacity
-                                  onPress={() => {
-                                    const lat = report.location[1];
-                                    const lng = report.location[0];
-                                    const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
-                                    Linking.openURL(url);
-                                  }}
-                                  className="bg-green-500 px-4 py-2 rounded-md"
-                                >
-                                  <RNText className="text-white font-bold">Open in Maps</RNText>
-                                </TouchableOpacity>
-                              </View>
-                            )}
+                            {/* Static Google Maps image */}
+                            <Image
+                              source={{ 
+                                uri: `https://maps.googleapis.com/maps/api/staticmap?center=${report.location[1]},${report.location[0]}&zoom=15&size=400x200&markers=color:red%7Clabel:R%7C${report.location[1]},${report.location[0]}&maptype=roadmap&style=feature:poi%7Cvisibility:on&key=AIzaSyBXEUzzVkNk1BpBESFqbftnG6Om66vNPY0` 
+                              }}
+                              style={mapStyles.image}
+                              resizeMode="cover"
+                              onError={(error) => {
+                                console.log('Map image loading error:', error.nativeEvent.error);
+                              }}
+                              onLoad={() => {
+                                console.log('Map image loaded successfully');
+                              }}
+                            />
+                            {/* Fallback view in case image fails to load */}
+                            <View style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              backgroundColor: '#f0f0f0',
+                              justifyContent: 'center',
+                              alignItems: 'center',
+                              zIndex: -1
+                            }}>
+                              <RNText className="text-gray-500 text-sm">Loading map...</RNText>
+                            </View>
+                            {/* Overlay button to open in native maps */}
+                            <TouchableOpacity
+                              onPress={() => {
+                                const lat = report.location[1];
+                                const lng = report.location[0];
+                                const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+                                Linking.openURL(url);
+                              }}
+                              style={{
+                                position: 'absolute',
+                                bottom: 8,
+                                right: 8,
+                                backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                                paddingHorizontal: 8,
+                                paddingVertical: 4,
+                                borderRadius: 4,
+                                borderWidth: 1,
+                                borderColor: '#ddd',
+                                shadowColor: '#000',
+                                shadowOffset: { width: 0, height: 1 },
+                                shadowOpacity: 0.2,
+                                shadowRadius: 2,
+                                elevation: 2
+                              }}
+                            >
+                              <RNText className="text-xs font-bold text-gray-700">Open in Maps</RNText>
+                            </TouchableOpacity>
                           </View>
                         ) : (
                           <View style={styles.noFilesContainer}>
