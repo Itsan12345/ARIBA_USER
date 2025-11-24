@@ -5,27 +5,56 @@ import { HttpStatus } from "@/enums/status";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
-    Alert,
-    Image,
-    SafeAreaView,
-    Text,
-    TouchableOpacity,
-    View,
+  Alert,
+  Image,
+  SafeAreaView,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
   const router = useRouter();
 
   const handleSendEmail = async () => {
     if (!email) {
-      Alert.alert("Please enter your email");
+      Alert.alert("Error", "Please enter your email");
       return;
     }
 
-    const req = await forgotPassword(email);
-    if (req.status === HttpStatus.OK) {
-      console.log("REQ SENT");
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert("Error", "Please enter a valid email address");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const req = await forgotPassword(email);
+      if (req.status === HttpStatus.OK) {
+        setEmailSent(true);
+        Alert.alert(
+          "Success", 
+          "Password reset email sent! Please check your inbox and follow the instructions to reset your password.",
+          [
+            {
+              text: "OK",
+              onPress: () => router.push("/")
+            }
+          ]
+        );
+      } else {
+        Alert.alert("Error", req.message || "Failed to send password reset email");
+      }
+    } catch (error) {
+      Alert.alert("Error", "Something went wrong. Please try again.");
+      console.error("Forgot password error:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -41,7 +70,10 @@ export default function ForgotPassword() {
 
       {/* Instruction text */}
       <Text className="text-center text-black mb-5">
-        Enter Email so we can send you confirmation
+        {emailSent 
+          ? "Check your email for password reset instructions" 
+          : "Enter your email to receive password reset instructions"
+        }
       </Text>
 
       {/* Input */}
@@ -56,10 +88,16 @@ export default function ForgotPassword() {
       {/* Send Email button */}
       <TouchableOpacity
         onPress={handleSendEmail}
+        disabled={loading || emailSent}
         className="w-full py-4 rounded-lg mb-8 mt-3"
-        style={{ backgroundColor: "#34C759" }}
+        style={{ 
+          backgroundColor: loading || emailSent ? "#A0A0A0" : "#34C759",
+          opacity: loading || emailSent ? 0.7 : 1
+        }}
       >
-        <Text className="text-white font-bold text-center">Send Email</Text>
+        <Text className="text-white font-bold text-center">
+          {loading ? "Sending..." : emailSent ? "Email Sent" : "Send Email"}
+        </Text>
       </TouchableOpacity>
 
       {/* Divider */}

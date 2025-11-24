@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFonts } from "expo-font";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -45,7 +45,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Heart, MessageCircle, MoreVertical, Plus } from "lucide-react-native";
 
 const ForumsScreen = () => {
-  const { user } = useAuth();
+  const { user, userDoc } = useAuth();
   const router = useRouter();
 
   // States
@@ -64,6 +64,10 @@ const ForumsScreen = () => {
   const [likeAnimations, setLikeAnimations] = useState({});
   const [commentAnimations, setCommentAnimations] = useState({});
   const [menuOpenId, setMenuOpenId] = useState(null);
+  // Cache for author profiles (firstName, lastName, photo, isAdmin, etc.)
+  const [authors, setAuthors] = useState({});
+  const [expandedPosts, setExpandedPosts] = useState(new Set());
+  const skipNavigation = useRef(false);
 
   // Update current time every minute
   useEffect(() => {
@@ -102,6 +106,56 @@ const ForumsScreen = () => {
     if (Object.keys(newCommentAnimations).length > 0) {
       setCommentAnimations(prev => ({ ...prev, ...newCommentAnimations }));
     }
+  }, [discussions]);
+
+  // Fetch missing author profiles for discussions (from `users` collection)
+  useEffect(() => {
+    const fetchMissingAuthors = async () => {
+      try {
+        const idsToFetch = Array.from(
+          new Set(
+            discussions
+              .map((d) => d.authorId)
+              .filter((id) => id && !authors[id])
+          )
+        );
+
+        if (idsToFetch.length === 0) return;
+
+        const fetched = {};
+        await Promise.all(
+          idsToFetch.map(async (id) => {
+            try {
+              const userDocRef = doc(db, "users", id);
+              const snap = await getDoc(userDocRef);
+              if (snap.exists()) {
+                const data = snap.data();
+                fetched[id] = {
+                  firstName: data.firstName || data.first_name || null,
+                  lastName: data.lastName || data.last_name || null,
+                  photo: data.photoURL || data.photo || data.avatar || null,
+                  isAdmin: !!(data.isAdmin || data.role === "admin" || data.role === "Admin"),
+                  displayName: data.displayName || `${data.firstName || ""} ${data.lastName || ""}`.trim() || null,
+                };
+              }
+            } catch (e) {
+              // ignore individual fetch errors
+              console.error("Error fetching author:", id, e);
+            }
+          })
+        );
+
+        if (Object.keys(fetched).length > 0) {
+          setAuthors((prev) => ({ ...prev, ...fetched }));
+        }
+      } catch (e) {
+        console.error("Error fetching authors:", e);
+      }
+    };
+
+    fetchMissingAuthors();
+    // only re-run when discussions change; authors is intentionally omitted to avoid loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [discussions]);
 
   const saveLikesToCache = async (likes) => {
@@ -190,7 +244,8 @@ const ForumsScreen = () => {
           content: newDiscussion.description,
           likesCount: 0,
           commentsCount: 0,
-          authorName: user?.displayName || "Anonymous",
+          // Use Firestore-stored first/last name when available, fall back to displayName or Anonymous
+          authorName: (userDoc?.firstName || userDoc?.lastName) ? `${userDoc?.firstName || ''} ${userDoc?.lastName || ''}`.trim() : (user?.displayName || 'Anonymous'),
           authorPhoto: user?.photoURL || "https://i.pravatar.cc/100",
           authorId: user?.uid,
           timestamp: serverTimestamp(),
@@ -404,8 +459,14 @@ const ForumsScreen = () => {
             const isOwner = item.authorId === user?.uid;
             const likeAnimationValue = likeAnimations[item.id] || new Animated.Value(1);
             const commentAnimationValue = commentAnimations[item.id] || new Animated.Value(1);
+            const author = (item.authorId && authors[item.authorId]) ? authors[item.authorId] : {};
+            const authorPhoto = item.authorPhoto || author.photo || "https://i.pravatar.cc/100";
+            const displayName = (author.firstName || author.lastName)
+              ? `${author.firstName || ""} ${author.lastName || ""}`.trim()
+              : (item.authorName || author.displayName || "Anonymous");
+            const isAdminPoster = !!(item.isAdmin || author.isAdmin);
             return (
-              <Card className="p-4 mb-4 rounded-xl border border-green-600 bg-white" style={{ position: 'relative' }}>
+              <Card className="p-4 pr-6 mb-4 rounded-xl border border-green-600 bg-white" style={{ position: 'relative' }}>
                 {/* Kebab menu - only visible to owner */}
                 {isOwner && (
                   <View style={{ position: "absolute", top: 8, right: 8, zIndex: 20 }}>
@@ -459,19 +520,74 @@ const ForumsScreen = () => {
                     )}
                   </View>
                 )}
-                <TouchableOpacity onPress={() => router.push(`/(tabs)/(index)/${item.id}`)}>
-                  <Box className="flex-row items-center mb-2">
-                    <Text className="text-xl text-black font-[DMBold]">{item.title}</Text>
-                    <Text className="mx-2 text-gray-400">•</Text>
-                    <Text className="text-xs text-gray-500 font-[DM]">
-                      {item.timestamp?.toDate
-                        ? formatTimeAgo(item.timestamp.toDate(), currentTime)
-                        : "..."}
-                    </Text>
-                  </Box>
-                  <Text numberOfLines={2} className="text-black mb-3 font-[DM]">
-                    {item.content}
-                  </Text>
+                <TouchableOpacity activeOpacity={0.95} onPress={() => {
+                  if (skipNavigation.current) {
+                    // clear the flag and don't navigate (See more was tapped)
+                    skipNavigation.current = false;
+                    return;
+                  }
+                  router.push(`/(tabs)/(index)/${item.id}`);
+                }}>
+                  {/* Header: Avatar + Name */}
+                  <View className="flex-row items-start mb-2">
+                    <Image
+                      source={{ uri: authorPhoto }}
+                      style={{ width: 40, height: 40, borderRadius: 24, marginRight: 12 }}
+                    />
+
+                    <View style={{ flex: 1 }}>
+                      <Text className="text-base text-black font-[DMBold]">{displayName}</Text>
+
+                      <View className="flex-row items-center mt-1">
+                        {isAdminPoster && (
+                          <View className="bg-green-100 rounded-md px-2 py-0.5 mr-2">
+                            <Text className="text-green-800 text-sm font-[DM]">Admin</Text>
+                          </View>
+                        )}
+                        <Text className="text-xs text-gray-500 font-[DM]">{item.timestamp?.toDate ? formatTimeAgo(item.timestamp.toDate(), currentTime) : "..."}</Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Title (prominent, full width, left-aligned) */}
+                  <View>
+                    <Text className="text-2xl text-black font-[Poppins] mb-2">{item.title}</Text>
+
+                    {/* Content preview: truncate with 'See more' if long (left-aligned) */}
+                    {(() => {
+                      const content = item.content || "";
+                      const isExpanded = expandedPosts.has(item.id);
+                      const shouldTruncate = content.length > 220;
+
+                      if (isExpanded) {
+                        return (
+                          <Text className="text-black mb-3 font-[DM]">{content}</Text>
+                        );
+                      }
+
+                      if (shouldTruncate) {
+                        const preview = content.slice(0, 220).trim();
+                        return (
+                          <Text className="text-black mb-3 font-[DM]">
+                            {preview}
+                            <Text>... </Text>
+                            <Text
+                              className="text-green-600"
+                              onPress={() => {
+                                // mark to skip parent navigation and expand inline
+                                skipNavigation.current = true;
+                                setExpandedPosts(prev => new Set(prev).add(item.id));
+                              }}
+                            >
+                              See more
+                            </Text>
+                          </Text>
+                        );
+                      }
+
+                      return <Text className="text-black mb-3 font-[DM]">{content}</Text>;
+                    })()}
+                  </View>
                 </TouchableOpacity>
 
                 {/* Likes + Comments */}

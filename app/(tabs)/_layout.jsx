@@ -1,20 +1,25 @@
 import * as Location from 'expo-location';
-import { Tabs, useSegments } from "expo-router";
-import { Bell, Bot, FileText, Home, Send, User } from "lucide-react-native";
+import { Tabs, useRouter, useSegments } from "expo-router";
+import { AlertTriangle, Bell, FileText, Home, Send, User } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
-import { Alert, Animated, Easing, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Alert, Animated, Easing, Image, StyleSheet, TouchableOpacity, View } from "react-native";
 import SendNewReport from "../../components/modals/SendNewReport";
 
 export default function TabLayout() {
   const [isModalVisible, setModalVisible] = useState(false);
   const segments = useSegments();
   const currentTab = segments[segments.length - 1];
+  const router = useRouter();
   
   // Animation values
-  const fabAnimation = useRef(new Animated.Value(1)).current;
+  // Each FAB gets its own scale and shimmer refs so clicking one doesn't animate the other
+  const fabAnimationSend = useRef(new Animated.Value(1)).current;
+  const fabAnimationChatbot = useRef(new Animated.Value(1)).current;
   const pulseAnimation = useRef(new Animated.Value(1)).current;
-  const shimmerAnimation = useRef(new Animated.Value(-1)).current;
-  const rotateAnimation = useRef(new Animated.Value(0)).current;
+  const shimmerSend = useRef(new Animated.Value(-1)).current;
+  const shimmerChatbot = useRef(new Animated.Value(-1)).current;
+  const rotateSend = useRef(new Animated.Value(0)).current;
+  const rotateChatbot = useRef(new Animated.Value(0)).current;
 
   // Loading screen animations
   const [isLoading, setIsLoading] = useState(false);
@@ -44,20 +49,24 @@ export default function TabLayout() {
     pulse();
   }, []);
 
-  // Periodic shimmer effect
+  // Periodic shimmer effect for each FAB separately (so they can shimmer independently)
   useEffect(() => {
-    const shimmer = () => {
-      Animated.timing(shimmerAnimation, {
-        toValue: 1,
-        duration: 1500,
-        easing: Easing.inOut(Easing.ease),
-        useNativeDriver: true,
-      }).start(() => {
-        shimmerAnimation.setValue(-1);
-        setTimeout(shimmer, 3000); // Shimmer every 4.5 seconds
-      });
+    const startShimmer = (shimmerRef, initialDelay = 1000) => {
+      const shimmer = () => {
+        Animated.timing(shimmerRef, {
+          toValue: 1,
+          duration: 1500,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }).start(() => {
+          shimmerRef.setValue(-1);
+          setTimeout(shimmer, 3000); // Repeat after 3s
+        });
+      };
+      setTimeout(shimmer, initialDelay);
     };
-    setTimeout(shimmer, 1000); // Start after 1 second
+    startShimmer(shimmerSend, 1000);
+    startShimmer(shimmerChatbot, 1800);
   }, []);
 
   // Loading screen animation on tab change - only for tabs that haven't been loaded yet
@@ -116,47 +125,61 @@ export default function TabLayout() {
     return () => clearTimeout(timer);
   }, [segments, loadedTabs, currentTab]);
 
-  const animateFab = () => {
-    // Scale animation (existing)
-    Animated.sequence([
-      Animated.timing(fabAnimation, {
-        toValue: 1.1,
-        duration: 100,
-        easing: Easing.out(Easing.back(1.5)),
-        useNativeDriver: true,
-      }),
-      Animated.timing(fabAnimation, {
+  // Animate only the provided FAB refs: rotateRef, scaleRef, shimmerRef
+  const animateFab = (rotateRef = null, scaleRef = null, shimmerRef = null, onRotateComplete = null) => {
+    // Scale animation for the provided scaleRef only
+    if (scaleRef) {
+      Animated.sequence([
+        Animated.timing(scaleRef, {
+          toValue: 1.1,
+          duration: 100,
+          easing: Easing.out(Easing.back(1.5)),
+          useNativeDriver: true,
+        }),
+        Animated.timing(scaleRef, {
+          toValue: 1,
+          duration: 200,
+          easing: Easing.out(Easing.elastic(1)),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+
+    // Rotation animation for the provided rotateRef only
+    if (rotateRef) {
+      Animated.timing(rotateRef, {
         toValue: 1,
         duration: 200,
-        easing: Easing.out(Easing.elastic(1)),
+        easing: Easing.out(Easing.ease),
         useNativeDriver: true,
-      }),
-    ]).start();
+      }).start(() => {
+        rotateRef.setValue(0);
+        if (onRotateComplete) onRotateComplete();
+      });
+    }
 
-    // Rotation animation
-    Animated.timing(rotateAnimation, {
-      toValue: 1,
-      duration: 200,
-      easing: Easing.out(Easing.ease),
-      useNativeDriver: true,
-    }).start(() => {
-      rotateAnimation.setValue(0);
-    });
-
-    // Trigger immediate shimmer
-    shimmerAnimation.setValue(-1);
-    Animated.timing(shimmerAnimation, {
-      toValue: 1,
-      duration: 600,
-      easing: Easing.out(Easing.ease),
-      useNativeDriver: true,
-    }).start(() => {
-      shimmerAnimation.setValue(-1);
-    });
+    // Trigger immediate shimmer for the provided shimmerRef only
+    if (shimmerRef) {
+      shimmerRef.setValue(-1);
+      Animated.timing(shimmerRef, {
+        toValue: 1,
+        duration: 600,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: true,
+      }).start(() => {
+        shimmerRef.setValue(-1);
+      });
+    }
   };
 
   const handleFabPress = async () => {
-    animateFab();
+  // stop any chatbot rotation/scale/shimmer and reset before animating send FAB
+  try {
+    rotateChatbot.stopAnimation(); rotateChatbot.setValue(0);
+    fabAnimationChatbot.stopAnimation(); fabAnimationChatbot.setValue(1);
+    shimmerChatbot.stopAnimation(); shimmerChatbot.setValue(-1);
+  } catch (e) {}
+  animateFab(rotateSend, fabAnimationSend, shimmerSend);
     let { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission denied', 'Permission to access location was denied. Please enable it in your device settings to submit a report.');
@@ -171,6 +194,7 @@ export default function TabLayout() {
         screenOptions={{
           tabBarActiveTintColor: 'green',
           tabBarInactiveTintColor: 'gray',
+          tabBarStyle: { paddingBottom: 5, paddingTop: 5, height: 60, borderTopLeftRadius: 15, borderTopRightRadius: 15 },
         }}
       >
         <Tabs.Screen
@@ -190,11 +214,13 @@ export default function TabLayout() {
           }}
         />
         <Tabs.Screen
-          name="(ai)"
+          name="(sos)"
           options={{
-            title: "Nico",
+            title: "SOS",
             headerShown: false,
-            tabBarIcon: ({ color, size }) => <Bot color={color} size={size} />,
+            tabBarActiveTintColor: '#3a9c54ff',
+            tabBarInactiveTintColor: '#9ca3af',
+            tabBarIcon: ({ color, size }) => <AlertTriangle color={color} size={size} />,
           }}
         />
         <Tabs.Screen
@@ -235,43 +261,94 @@ export default function TabLayout() {
           />
         </Animated.View>
       )}
-      {currentTab !== '(ai)' && currentTab !== '[id]' && (
-        <Animated.View 
-          style={[
-            styles.fab, 
-            { 
-              transform: [
-                { scale: Animated.multiply(fabAnimation, pulseAnimation) },
-                { 
-                  rotate: rotateAnimation.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: ['0deg', '15deg']
-                  })
-                }
-              ]
-            }
-          ]}
-        >
-          <TouchableOpacity
-            style={styles.fabButton}
-            onPress={handleFabPress}
-          >
-            <Animated.View 
-              style={[
-                styles.shimmerOverlay,
-                {
-                  transform: [{
-                    translateX: shimmerAnimation.interpolate({
-                      inputRange: [-1, 1],
-                      outputRange: [-100, 100]
+  {currentTab !== '[id]' && currentTab !== '(sos)' && (
+        <>
+          <Animated.View 
+            style={[
+              styles.fab, 
+              { 
+                transform: [
+                  { scale: Animated.multiply(fabAnimationSend, pulseAnimation) },
+                  { 
+                    rotate: rotateSend.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ['0deg', '15deg']
                     })
-                  }]
-                }
-              ]}
-            />
-            <Send color="white" size={24} />
-          </TouchableOpacity>
-        </Animated.View>
+                  }
+                ]
+              }
+            ]}
+          >
+            <TouchableOpacity
+              style={styles.fabButton}
+              onPress={handleFabPress}
+            >
+              <Animated.View 
+                style={[
+                  styles.shimmerOverlay,
+                  {
+                    transform: [{
+                      translateX: shimmerSend.interpolate({
+                        inputRange: [-1, 1],
+                        outputRange: [-100, 100]
+                      })
+                    }]
+                  }
+                ]}
+              />
+              <Send color="white" size={24} />
+            </TouchableOpacity>
+          </Animated.View>
+
+          {/* Chatbot FAB - similar styling, positioned above Send FAB */}
+          <Animated.View 
+            style={[
+              styles.chatbotFab,
+              { 
+                transform: [
+                  { scale: Animated.multiply(fabAnimationChatbot, pulseAnimation) },
+                  { 
+                    rotate: rotateChatbot.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ['0deg', '15deg']
+                    })
+                  }
+                ]
+              }
+            ]}
+          >
+            <TouchableOpacity
+              style={[styles.fabButton, styles.chatbotButton]}
+              onPress={() => {
+                // stop any send FAB rotation/scale/shimmer and reset before animating chatbot FAB
+                try {
+                  rotateSend.stopAnimation(); rotateSend.setValue(0);
+                  fabAnimationSend.stopAnimation(); fabAnimationSend.setValue(1);
+                  shimmerSend.stopAnimation(); shimmerSend.setValue(-1);
+                } catch (e) {}
+                // animate chatbot FAB (only this FAB) then navigate
+                animateFab(rotateChatbot, fabAnimationChatbot, shimmerChatbot, () => {
+                  try { router.push('/AIChatbot/aichatbot'); } catch (e) { console.error('Navigation error:', e); }
+                });
+              }}
+            >
+              <Animated.View 
+                style={[
+                  styles.shimmerOverlay,
+                  {
+                    transform: [{
+                      translateX: shimmerChatbot.interpolate({
+                        inputRange: [-1, 1],
+                        outputRange: [-100, 100]
+                      })
+                    }]
+                  }
+                ]}
+              />
+              <Image source={require("../../assets/images/ariba-logo.png")} style={{ width: 38, height: 38, resizeMode: 'cover' }} />
+            </TouchableOpacity>
+          </Animated.View>
+        </>
       )}
       <SendNewReport visible={isModalVisible} onClose={() => setModalVisible(false)} />
     </View>
@@ -322,5 +399,13 @@ const styles = StyleSheet.create({
   loadingLogo: {
     width: 100,
     height: 100,
+  },
+  chatbotFab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 156, // slightly above the send FAB
+  },
+  chatbotButton: {
+    backgroundColor: '#16a34a', // green
   },
 });

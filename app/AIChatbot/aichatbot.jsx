@@ -15,7 +15,7 @@ import {
   View,
 } from "react-native";
 
-export default function AIChatbot() {
+export default function AIbot() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -58,7 +58,7 @@ const { user } = useAuth(); // Add this at the top of the component
     setMessages((prev) => [...prev, typingMessage]);
 
     try {
-      const N8N_WEBHOOK_URL = "http://192.168.1.18:5678/webhook/de96b7cc-d472-4bf4-b534-1de06cb85947";
+      const N8N_WEBHOOK_URL = "https://itsangabriel.app.n8n.cloud/webhook/f6b5929e-e415-448d-b3b9-df5df4142fa7";
 
       const response = await fetch(
         N8N_WEBHOOK_URL,
@@ -183,7 +183,7 @@ const { user } = useAuth(); // Add this at the top of the component
     {/* User profile pic at the right */}
     {msg.sender === "user" && (
       <Image
-        source={{ uri: user?.photoURL || "https://i.pravatar.cc/100" }}
+        source={{ uri: user?.photoURL || "https://www.shutterstock.com/image-vector/blank-avatar-photo-place-holder-600nw-1095249842.jpg" }}
         style={styles.profilePic}
       />
     )}

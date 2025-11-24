@@ -44,7 +44,8 @@ export async function newUserDoc(userCredentials, role, extra) {
     const userDocPayload = {
       name: displayName,
       email,
-      phone: phoneNumber || null,
+      // prefer explicit phone provided in the signup payload (extra.phone)
+      phone: (extra && extra.phone) ? extra.phone : phoneNumber || null,
       photoUrl,
       providerId,
       createdAt: metadata?.creationTime || null,
